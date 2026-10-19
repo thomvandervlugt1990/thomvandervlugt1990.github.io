@@ -86,6 +86,13 @@
   var RESTART_DELAY = 1.2;     // seconds before game over can be dismissed
   var NUM_CARS = 36;
 
+  // Crashes and the time-up explosion
+  var G_WORLD = 9000;          // gravity for knocked-away objects (world units / s^2)
+  var BIT_MAX = 70;            // cap on small world-space debris bits
+  var BOOM_G = 300;            // gravity for the exploding tractor's pieces (px / s^2)
+  var FX_MAX = 90;             // cap on explosion fire / smoke particles
+  var BOOM_PANEL_DELAY = 1.8;  // seconds of explosion before the TIME UP panel
+
   // ---- Look: palette and fonts ----------------------------------------
 
   var FONT = '"Press Start 2P", monospace';   // falls back to monospace by itself
@@ -166,6 +173,7 @@
       cp: false,                // checkpoint banner here?
       sprites: [],
       cars: [],
+      fx: [],                   // flying crash parts drawn at this segment (per frame)
       // filled in every frame by render():
       sx1: 0, sy1: 0, sw1: 0, sc1: 0, cz: 0,
       sx2: 0, sy2: 0, sw2: 0, sc2: 0,
@@ -413,15 +421,16 @@
 
   // World size (w) and shape (h, same units) of each roadside sprite.
   // solid: hitting it stops you. hit: width of the solid part (fraction of w).
+  // small: gets knocked flying when hit (the big ones stay put and shake).
   var SPRITES = {
     tree:     { w: 520,  h: 1500, solid: true,  hit: 0.3,  draw: drawTree },
     poplar:   { w: 300,  h: 1900, solid: true,  hit: 0.4,  draw: drawPoplar },
     windmill: { w: 1700, h: 3300, solid: true,  hit: 0.5,  draw: drawWindmill },
     barn:     { w: 2000, h: 1250, solid: true,  hit: 0.9,  draw: drawBarn },
-    hay:      { w: 460,  h: 460,  solid: true,  hit: 0.9,  draw: drawHay },
-    cow:      { w: 720,  h: 480,  solid: true,  hit: 0.8,  draw: drawCow },
+    hay:      { w: 460,  h: 460,  solid: true,  hit: 0.9,  draw: drawHay,  small: true },
+    cow:      { w: 720,  h: 480,  solid: true,  hit: 0.8,  draw: drawCow,  small: true },
     tulips:   { w: 2400, h: 260,  solid: false, hit: 0,    draw: drawTulips },
-    sign:     { w: 380,  h: 900,  solid: true,  hit: 0.6,  draw: drawSign }
+    sign:     { w: 380,  h: 900,  solid: true,  hit: 0.6,  draw: drawSign, small: true }
   };
 
   function addSprite(index, type, offset) {
@@ -537,6 +546,11 @@
   function updateCars(dt) {
     for (var i = 0; i < cars.length; i++) {
       var car = cars[i];
+      if (car.dead) {                  // knocked out: wait, then come back far away
+        car.respawn -= dt;
+        if (car.respawn <= 0) respawnCar(car);
+        continue;
+      }
       var oldSeg = findSegment(car.z);
       car.z = mod(car.z + dt * car.speed, trackLength);
       if (car.lat) {
@@ -571,6 +585,14 @@
   var lastCpKey, lap, lastBeep, particles, smokeAcc;
   var bg = [0, 0, 0];        // background scroll: clouds, far hills, near hills
 
+  // Crash effects (see the "Crashes" section)
+  var fly = [];              // world-space flying parts, debris bits and popups
+  var bitN = 0;              // how many of those are small debris bits
+  var felled = [];           // scenery knocked away, to be put back: { seg, sp }
+  var shaking = [];          // big scenery that is shaking after a hit
+  var fxSegs = [];           // segments that got flying parts this frame
+  var boom = null;           // the time-up explosion, when it is running
+
   function resetGame() {
     position = 0;
     speed = 0;
@@ -596,6 +618,10 @@
     lastBeep = -1;
     particles = [];
     smokeAcc = 0;
+    restoreScenery();
+    fly = [];
+    bitN = 0;
+    boom = null;
     resetCars();
   }
 
@@ -685,7 +711,19 @@
   function sfxCrash() { noise(0.3, 0.2); tone(140, 40, 0.35, 0.1); }
   function sfxBump() { noise(0.15, 0.14); tone(180, 70, 0.18, 0.08); }
   function sfxBeep() { tone(880, 880, 0.09, 0.06); }
-  function sfxTimeUp() { tone(440, 220, 0.5, 0.07); }
+  function sfxTimeUp() { tone(440, 220, 0.5, 0.05, BOOM_PANEL_DELAY); }   // when the panel shows
+  function sfxClang() { noise(0.2, 0.2); tone(900, 260, 0.14, 0.08); tone(1350, 500, 0.1, 0.05, 0.03); }
+  function sfxBaa() { tone(320, 250, 0.16, 0.06); tone(330, 210, 0.22, 0.06, 0.14); }
+  function sfxMoo() { tone(150, 120, 0.45, 0.08); tone(155, 95, 0.3, 0.06, 0.3); }
+  function sfxLeaves() { noise(0.3, 0.1); }
+  function sfxSnap() { noise(0.1, 0.12); tone(700, 200, 0.08, 0.06); }
+  function sfxPlanks() { noise(0.25, 0.16); tone(200, 90, 0.12, 0.07); }
+  function sfxBoom() {
+    noise(0.5, 0.35);
+    tone(120, 30, 0.8, 0.14);
+    tone(70, 25, 1.0, 0.12, 0.05);
+    noise(0.3, 0.12);
+  }
   function sfxStart() { tone(660, 990, 0.15, 0.06); }
 
   // The diesel: a low sawtooth through a low-pass filter, with a sawtooth
@@ -908,6 +946,750 @@
     }
   }
 
+  // ---- Crashes: knocked-away scenery, traffic and debris -----------------------
+  // Whatever you hit reacts. Knocked-away objects and their debris live in
+  // WORLD space: a z position along the track, a sideways position (world units
+  // from the road centre) and a height above the road. Each frame they are
+  // filed under the road segment they are over and drawn together with the
+  // sprites of that segment, so they sit at the right depth, follow hills and
+  // curves and are hidden behind crests like everything else. (A screen-space
+  // version would be simpler, but it would slide against the road as you
+  // drive past.) Flying parts are drawn in quarter turns (0/90/180/270
+  // degrees): that keeps the pixels crisp and gives a flip-book tumble.
+
+  var QC = [1, 0, -1, 0];       // exact cos / sin of the four quarter turns
+  var QS = [0, 1, 0, -1];
+
+  function rr(a, b) { return a + Math.random() * (b - a); }
+  function rsign() { return Math.random() < 0.5 ? -1 : 1; }
+  function anyOf(list) { return list[Math.floor(Math.random() * list.length)]; }
+
+  // Filled pixel disc (used for wheels and the fireball)
+  function pixelDisc(g, cx, cy, r, col) {
+    cx = Math.round(cx);
+    cy = Math.round(cy);
+    r = Math.max(1, Math.round(r));
+    g.fillStyle = col;
+    for (var dy = -r; dy <= r; dy++) {
+      var half = Math.floor(Math.sqrt(r * r - dy * dy) + 0.5);
+      g.fillRect(cx - half, cy + dy, half * 2 + 1, 1);
+    }
+  }
+
+  // A tractor wheel seen from the side, with one spoke so you can see it spin
+  function drawDiscWheel(g, cx, cy, d, rim) {
+    var r = Math.max(1, Math.round(d / 2));
+    pixelDisc(g, cx, cy, r, TIRE);
+    if (r >= 4) pixelDisc(g, cx, cy, r * 0.65, TREAD);
+    pixelDisc(g, cx, cy, Math.max(1, r * 0.4), rim);
+    g.fillStyle = rim;
+    g.fillRect(Math.round(cx), Math.round(cy), Math.round(r * 0.9), Math.max(1, Math.round(r * 0.2)));
+    g.fillStyle = '#9a9a9a';
+    g.fillRect(Math.round(cx) - 1, Math.round(cy) - r, 2, Math.max(1, Math.round(r * 0.25)));
+  }
+
+  // Three little stars circling a dazed head
+  function drawStars(cx, cy, r) {
+    for (var i = 0; i < 3; i++) {
+      var a = time * 5 + i * 2.094;
+      var sx = Math.round(cx + Math.cos(a) * r);
+      var sy = Math.round(cy + Math.sin(a) * r * 0.35);
+      o.fillStyle = '#ffe94d';
+      o.fillRect(sx - 1, sy, 3, 1);
+      o.fillRect(sx, sy - 1, 1, 3);
+      o.fillStyle = '#ffffff';
+      o.fillRect(sx, sy, 1, 1);
+    }
+  }
+
+  // Closure that draws rectangles in design units around a bottom-centre (x, y)
+  function rectIn(g, x, y, s) {
+    return function (ax, ay, aw, ah, col) {
+      var x0 = Math.round(x + ax * s);
+      var y0 = Math.round(y + ay * s);
+      var x1 = Math.round(x + (ax + aw) * s);
+      var y1 = Math.round(y + (ay + ah) * s);
+      if (x1 <= x0) x1 = x0 + 1;
+      if (y1 <= y0) y1 = y0 + 1;
+      g.fillStyle = col;
+      g.fillRect(x0, y0, x1 - x0, y1 - y0);
+    };
+  }
+
+  // -- Drawings for broken-off parts (same signature as the other sprites) --
+
+  function drawWheelPart(g, x, y, w, h, e) {
+    drawDiscWheel(g, x, y - w / 2, w, (e && e.rim) || '#e8d36a');
+  }
+
+  // The cyclist's bike, without the rider
+  function drawBikeWreck(g, x, y, w) {
+    var R = rectIn(g, x, y, w / 16);
+    R(-1, -14, 2, 14, '#202020');                            // wheel
+    R(-2, -17, 4, 3, '#6b4423');                             // saddle
+    R(-1, -22, 2, 6, '#9aa0a8');                             // stem
+    R(-6, -23, 12, 1, '#202020');                            // handlebar
+  }
+
+  // The cyclist flying through the air, or sitting dazed on the grass
+  function drawRider(g, x, y, w, h, e) {
+    var R = rectIn(g, x, y, w / 16);
+    if (e && e.sit) {
+      R(-7, -3, 6, 3, '#34495e');                            // legs stuck out
+      R(1, -3, 6, 3, '#34495e');
+      R(-4, -11, 8, 8, '#e8553b');                           // jacket
+      R(-7, -10, 3, 6, '#e8553b');                           // arms
+      R(4, -10, 3, 6, '#e8553b');
+      R(-3, -17, 6, 6, '#f2c49b');                           // head
+      R(-4, -19, 6, 3, '#f5d142');                           // helmet, askew
+      R(-2, -15, 1, 1, '#222222');                           // dizzy eyes
+      R(1, -15, 1, 1, '#222222');
+    } else {
+      var flap = Math.floor(time * 10) % 2;
+      R(-4, -10, 3, 10, '#34495e');                          // legs
+      R(1, -10, 3, 10, '#34495e');
+      R(-4, -22, 8, 12, '#e8553b');                          // jacket
+      R(-3, -28, 6, 6, '#f2c49b');                           // head
+      R(-3, -30, 6, 3, '#f5d142');                           // helmet
+      R(-8, flap ? -30 : -22, 3, 8, '#e8553b');              // flailing arms
+      R(5, flap ? -22 : -30, 3, 8, '#e8553b');
+    }
+  }
+
+  function drawSignBoard(g, x, y, w, h) {
+    box(g, '#f4f4f4', x, y, w, h, -0.5, 0, 1.0, 1.0);
+    box(g, '#1d5fc1', x, y, w, h, -0.44, 0.08, 0.88, 0.84);
+    box(g, '#f4f4f4', x, y, w, h, -0.32, 0.64, 0.64, 0.1);
+    box(g, '#f4f4f4', x, y, w, h, -0.32, 0.4, 0.44, 0.1);
+  }
+
+  function drawSignPole(g, x, y, w, h) {
+    box(g, '#9aa0a8', x, y, w, h, -0.5, 0, 1.0, 1.0);
+  }
+
+  // One windmill sail: a pole with a bit of cloth
+  function drawSailPiece(g, x, y, w, h) {
+    box(g, '#5a3a22', x, y, w, h, -0.5, 0, 0.12, 1.0);
+    box(g, '#f1ede2', x, y, w, h, -0.38, 0.1, 0.88, 0.7);
+    box(g, '#5a3a22', x, y, w, h, -0.38, 0.4, 0.88, 0.05);
+  }
+
+  // -- World-space flying things ---------------------------------------------
+  // kinds: 'part' (a rotating sprite), 'bit' (a small coloured square) and
+  // 'text' (a floating popup like MOO!)
+
+  function addFly(k, z, wx, h, vz, vx, vh, props) {
+    var it = {
+      k: k, z: mod(z, trackLength), wx: wx, h: h, vz: vz, vx: vx, vh: vh,
+      g: G_WORLD, rest: 0.45, bounces: 1, landed: false, t: 0, life: 5,
+      q: 0, vq: 0, restQ: 0, roll: false, fade: false
+    };
+    for (var key in props) it[key] = props[key];
+    if (k === 'bit') bitN++;
+    fly.push(it);
+    return it;
+  }
+
+  // A burst of debris squares. opt: dir (-1/1 sideways bias), spread, vz,
+  // upLo/upHi (launch speed), sizeLo/sizeHi, g, lifeLo/lifeHi, ar (width/height)
+  function spawnBits(n, z, wx, hLo, hHi, cols, opt) {
+    var d = opt || {};
+    var spread = d.spread || 2500;
+    for (var i = 0; i < n && bitN < BIT_MAX; i++) {
+      addFly('bit', z + rr(-80, 80), wx + rr(-100, 100), rr(hLo, hHi),
+        (d.vz || 0) + rr(-1000, 1000),
+        (d.dir || 0) * spread * 0.5 + rr(-spread, spread) * 0.6,
+        rr(d.upLo === undefined ? 800 : d.upLo, d.upHi || 3500),
+        {
+          col: anyOf(cols), size: rr(d.sizeLo || 50, d.sizeHi || 90), ar: d.ar || 1,
+          g: d.g || 7000, life: rr(d.lifeLo || 0.8, d.lifeHi || 1.5), fade: true
+        });
+    }
+  }
+
+  var DUST = ['#a8d889', '#8cc36e', '#c9b98a'];
+  var STRAW = ['#e6c94a', '#cfa93a', '#f0d65f', '#b99a2c'];
+  var WOOL = ['#ffffff', '#e8e8e8', '#cfcfcf'];
+  var SMOKE_GREY = ['#777777', '#999999', '#b0b0b0'];
+
+  function puff(z, wx, h, cols, n) {
+    spawnBits(n, z, wx, h, h + 200, cols,
+      { spread: 1200, upLo: 300, upHi: 1800, sizeLo: 70, sizeHi: 120, g: 1500, lifeLo: 0.4, lifeHi: 0.7 });
+  }
+
+  function landFly(it) {
+    it.h = 0;
+    if (it.bounces > 0 && it.vh < -600) {            // bounce
+      it.vh = -it.vh * it.rest;
+      it.bounces--;
+      it.vx *= 0.7;
+      it.vz *= 0.7;
+      it.vq *= 0.6;
+      return;
+    }
+    it.vh = 0;
+    it.landed = true;
+    if (it.k !== 'part') return;
+    if (!it.roll) { it.vq = 0; it.q = it.restQ; }
+    if (it.sit) it.e.sit = true;                     // the cyclist sits down
+    if (it.land === 'straw') {                       // hay bale bursts on impact
+      spawnBits(10, it.z, it.wx, 50, 400, STRAW, { spread: 2200, upLo: 1200, upHi: 3500, sizeLo: 60, sizeHi: 110, g: 2200, lifeLo: 1.0, lifeHi: 1.8 });
+      it.life = it.t;
+    } else if (it.land === 'moo' || it.land === 'baa') {
+      addFly('text', it.z, it.wx, it.bh * 1.1, 0, 0, 0, { text: it.land === 'moo' ? 'MOO!' : 'BAA!', life: 1.5 });
+      if (it.land === 'moo') sfxMoo(); else sfxBaa();
+    }
+    if (!it.roll) puff(it.z, it.wx, 0, DUST, 4);     // a bit of dust
+  }
+
+  function expireFly(it) {
+    if (it.poof) puff(it.z, it.wx, 0, it.poof, 6);
+  }
+
+  function updateFly(dt) {
+    if (!fly.length) return;
+    var pz = mod(position + PLAYER_Z, trackLength);
+    bitN = 0;
+    for (var i = fly.length - 1; i >= 0; i--) {
+      var it = fly[i];
+      it.t += dt;
+      if (it.t >= it.life) { expireFly(it); fly.splice(i, 1); continue; }
+      if (wrapDz(it.z - pz) < -SEG_LEN * 6) { fly.splice(i, 1); continue; }   // far behind
+      if (it.k === 'text') { it.h += 350 * dt; continue; }
+      if (!it.landed) {
+        it.vh -= it.g * dt;
+        it.h += it.vh * dt;
+        it.q += it.vq * dt;
+        if (it.h <= 0 && it.vh < 0) landFly(it);
+      } else {
+        var drag = Math.max(0, 1 - (it.roll ? 1.2 : 6) * dt);    // slide / roll to a stop
+        it.vx *= drag;
+        it.vz *= drag;
+        if (it.roll) it.q += it.vx * dt / 150;
+      }
+      it.wx += it.vx * dt;
+      it.z = mod(it.z + it.vz * dt, trackLength);
+      if (it.k === 'bit') bitN++;
+    }
+  }
+
+  // File every flying thing under the segment it is over (only the drawn ones)
+  function bucketFx(baseSeg) {
+    var i, seg;
+    for (i = 0; i < fxSegs.length; i++) fxSegs[i].fx.length = 0;
+    fxSegs.length = 0;
+    for (i = 0; i < fly.length; i++) {
+      seg = findSegment(fly[i].z);
+      if (mod(seg.i - baseSeg.i, N) >= DRAW_DIST) continue;
+      if (seg.fx.length === 0) fxSegs.push(seg);
+      seg.fx.push(fly[i]);
+    }
+  }
+
+  function drawFly(seg, it) {
+    var pct = (it.z - seg.z1) / SEG_LEN;
+    var pw = lerp(seg.sc1, seg.sc2, pct) * LW / 2;          // screen pixels per world unit
+    var gx = lerp(seg.sx1, seg.sx2, pct) + it.wx * pw;     // road point under the object
+    var gy = lerp(seg.sy1, seg.sy2, pct);
+    var y = gy - it.h * pw;                                  // bottom of the object
+    if (gx < -30 || gx > LW + 30) return;
+
+    if (it.k === 'bit') {
+      if (y > seg.clip) return;                              // behind a hill crest
+      var sz = clamp(Math.round(it.size * pw), 1, 14);
+      var bw = Math.max(1, Math.round(sz * it.ar));
+      if (it.fade) o.globalAlpha = clamp((it.life - it.t) / 0.35, 0, 1);
+      o.fillStyle = it.col;
+      o.fillRect(Math.round(gx - bw / 2), Math.round(y - sz), bw, sz);
+      o.globalAlpha = 1;
+      return;
+    }
+
+    if (it.k === 'text') {
+      if (y > seg.clip || pw < 0.03) return;
+      drawText(it.text, Math.round(gx), Math.round(y - 8), 8, '#ffffff', 'center', '#d8202a');
+      return;
+    }
+
+    // A rotating part. Blink for the last moments before it vanishes.
+    if (it.life - it.t < 0.9 && Math.floor(time * 14) % 2 === 0) return;
+    var w = it.dw * pw;
+    if (w < 1.5) return;
+    var vw = it.bw * pw;
+    var vh = it.bh * pw;
+    var qi = mod(Math.floor(it.q), 4);
+    var cy = y - ((qi & 1) ? vw : vh) / 2;                  // box centre (a side-on box is wider than tall)
+    var clipped = gy > seg.clip;
+    if (clipped && cy - vh / 2 >= seg.clip) return;
+    o.save();
+    if (clipped) {
+      o.beginPath();
+      o.rect(0, 0, LW, seg.clip);
+      o.clip();
+    }
+    o.translate(Math.round(gx), Math.round(cy));
+    o.transform(QC[qi], QS[qi], -QS[qi], QC[qi], 0, 0);
+    it.draw(o, 0, Math.round(vh / 2), w, w * it.dh / it.dw, it.e);
+    flipDir = 1;
+    o.restore();
+    if (it.stars && it.landed) drawStars(gx, y - vh * 0.5, Math.max(4, vw * 0.5));
+  }
+
+  // -- Scenery that was hit ----------------------------------------------------
+
+  function crashSprite(seg, sp, hitSpeed) {
+    var spec = SPRITES[sp.type];
+    var dir = sp.offset >= 0 ? 1 : -1;                       // away from the road
+    var z = seg.z1 + SEG_LEN * 0.5;
+    var wx = sp.offset * ROAD_W;
+    var vz = hitSpeed * 0.4 + 500;
+    var spin = rsign() * rr(5, 8);
+    var t = sp.type;
+
+    if (!spec.small) {
+      // Big things stay put: they wobble and shed debris from the side you hit
+      sp.shake = 0.55;
+      if (shaking.indexOf(sp) < 0) shaking.push(sp);
+      wx -= dir * spec.w * spec.hit * 0.5;
+      if (t === 'tree' || t === 'poplar') {
+        spawnBits(16, z, wx, spec.h * 0.3, spec.h * 0.85,
+          ['#2f8a3a', '#3da24a', '#4cb85a', '#6ad176', '#6b4423'],
+          { spread: 2200, upLo: 0, upHi: 2500, g: 2600, lifeLo: 1.0, lifeHi: 1.7, vz: vz * 0.5 });
+        sfxLeaves();
+      } else {
+        spawnBits(12, z, wx, 150, spec.h * 0.6,
+          t === 'barn' ? ['#b3322a', '#8f241f', '#f3ecdc', '#5b4a47'] : ['#efe6d6', '#b5523b', '#e4d9c4'],
+          { spread: 2800, upLo: 800, upHi: 3500, sizeLo: 60, sizeHi: 100, ar: 2.4, g: 7000, vz: vz * 0.5 });
+        sfxPlanks();
+        if (t === 'windmill') {                              // a sail snaps off
+          addFly('part', z, wx, 1500, vz * 0.5, -dir * rr(500, 1500), rr(3500, 4500),
+            { draw: drawSailPiece, e: sp, dw: 500, dh: 1200, bw: 500, bh: 1200, vq: spin, restQ: 1, life: 4 });
+        }
+      }
+      return;
+    }
+
+    // Small things are knocked away: take them out of the segment so they
+    // cannot be hit again; updateScenery() puts them back after you pass.
+    seg.sprites.splice(seg.sprites.indexOf(sp), 1);
+    felled.push({ seg: seg, sp: sp });
+    var vx = dir * rr(2200, 3200);
+
+    if (t === 'hay') {
+      spawnBits(8, z, wx, 100, 400, STRAW, { dir: dir, spread: 2200, upLo: 1200, upHi: 3500, sizeLo: 60, sizeHi: 110, g: 2200, lifeLo: 1.0, lifeHi: 1.8 });
+      addFly('part', z, wx, 100, vz, vx, rr(2800, 3600),
+        { draw: spec.draw, e: sp, dw: spec.w, dh: spec.h, bw: spec.w, bh: spec.h, vq: spin, bounces: 0, land: 'straw', life: 3 });
+    } else if (t === 'sign') {
+      sfxSnap();
+      spawnBits(5, z, wx, 300, 800, ['#9aa0a8', '#f4f4f4', '#1d5fc1'], { dir: dir, spread: 2000, upLo: 1000, upHi: 3000 });
+      addFly('part', z, wx, 600, vz, vx, rr(3500, 4500),
+        { draw: drawSignBoard, e: sp, dw: 380, dh: 400, bw: 380, bh: 400, vq: spin, restQ: 1, life: 3.5 });
+      addFly('part', z, wx, 200, vz, dir * rr(800, 1800), rr(2500, 3500),
+        { draw: drawSignPole, e: sp, dw: 60, dh: 600, bw: 60, bh: 600, vq: -spin * 0.7, restQ: 3, life: 3.5 });
+    } else if (t === 'cow') {
+      // Tumbles head over hooves, lands on its feet, unhurt
+      puff(z, wx, 100, WOOL, 4);
+      addFly('part', z, wx, 100, vz, vx, rr(3600, 4400),
+        { draw: spec.draw, e: sp, dw: spec.w, dh: spec.h, bw: spec.w, bh: spec.h, vq: spin * 0.6, bounces: 2, rest: 0.4, land: 'moo', poof: WOOL, life: 4.5 });
+    }
+  }
+
+  // Shake timers and putting knocked-away scenery back once you are past it
+  function updateScenery(dt) {
+    var i;
+    for (i = shaking.length - 1; i >= 0; i--) {
+      shaking[i].shake -= dt;
+      if (shaking[i].shake <= 0) { shaking[i].shake = 0; shaking.splice(i, 1); }
+    }
+    var pz = mod(position + PLAYER_Z, trackLength);
+    for (i = felled.length - 1; i >= 0; i--) {
+      if (wrapDz(felled[i].seg.z1 - pz) < -SEG_LEN * 20) {   // behind you, out of sight
+        felled[i].seg.sprites.push(felled[i].sp);
+        felled.splice(i, 1);
+      }
+    }
+  }
+
+  function restoreScenery() {
+    var i;
+    for (i = 0; i < felled.length; i++) felled[i].seg.sprites.push(felled[i].sp);
+    felled.length = 0;
+    for (i = 0; i < shaking.length; i++) shaking[i].shake = 0;
+    shaking.length = 0;
+  }
+
+  // -- Traffic that was hit ------------------------------------------------------
+
+  // Visual size of the whole drawing, in world units (a bit different from the
+  // collision size in CAR_TYPES): used to place the tumbling box on the ground
+  var CAR_LOOK = {
+    tractor: { w: 400, h: 450 },
+    wagon:   { w: 520, h: 630 },
+    sheep:   { w: 560, h: 170 }
+  };
+
+  function crashCar(car, hitSpeed) {
+    var spec = CAR_TYPES[car.type];
+    var seg = findSegment(car.z);
+    var at = seg.cars.indexOf(car);
+    if (at >= 0) seg.cars.splice(at, 1);       // off the road for good (until it respawns)
+    car.dead = true;
+    car.respawn = 6 + Math.random() * 4;
+
+    var t = car.type;
+    var dir = car.offset >= playerX ? 1 : -1;  // knocked away from the player
+    var wx = car.offset * ROAD_W;
+    var vz = hitSpeed * 0.4 + 600;
+    var vh = rr(2800, 3500);
+    var air = 2 * vh / G_WORLD;
+    var vx = (dir * rr(1.6, 2.4) * ROAD_W - wx) / air * 0.85;   // lands on the grass beside the road
+    var spin = rsign() * rr(5, 8);
+    var look = CAR_LOOK[t];
+    var col = TRACTOR_COLORS[car.v % TRACTOR_COLORS.length];
+
+    if (t === 'bike') {
+      sfxClang();
+      addFly('part', car.z, wx, 60, vz, vx, vh,
+        { draw: drawBikeWreck, e: car, dw: 190, dh: 330, bw: 140, bh: 270, vq: spin, restQ: rsign() > 0 ? 1 : 3, bounces: 2, life: 5 });
+      addFly('part', car.z, wx, 250, vz * 0.8, vx * 0.6 + dir * 500, vh * 1.3,
+        { draw: drawRider, e: { sit: false }, sit: true, stars: true, dw: 190, dh: 330, bw: 170, bh: 370,
+          vq: -spin * 0.7, restQ: 0, bounces: 1, rest: 0.3, poof: WOOL, life: 5.5 });
+      spawnBits(4, car.z, wx, 100, 400, ['#9aa0a8', '#202020', '#e8553b'], { dir: dir, spread: 2000 });
+    } else if (t === 'sheep') {
+      sfxBaa();
+      spawnBits(12, car.z, wx, 100, 300, WOOL, { dir: dir, spread: 2500, upLo: 1500, upHi: 4000, sizeLo: 80, sizeHi: 140, g: 2500, lifeLo: 0.8, lifeHi: 1.6 });
+      addFly('part', car.z, wx, 60, vz, vx * 0.7, vh,
+        { draw: drawSheep, e: car, dw: spec.w, dh: spec.h, bw: look.w, bh: look.h, vq: spin * 0.6, restQ: 0, bounces: 3, rest: 0.5, land: 'baa', poof: WOOL, life: 3.5 });
+    } else {
+      // Tractor or hay wagon: body chunks, a wheel that bounces away and smoke
+      sfxClang();
+      addFly('part', car.z, wx, 80, vz, vx, vh,
+        { draw: CAR_DRAW[t], e: car, dw: spec.w, dh: spec.h, bw: look.w, bh: look.h, vq: spin, restQ: rsign() > 0 ? 1 : 3, bounces: 2, life: 6 });
+      var wd = t === 'wagon' ? 150 : 190;
+      addFly('part', car.z, wx, 150, vz * 0.8, dir * rr(2500, 4500), rr(3500, 4800),
+        { draw: drawWheelPart, e: { rim: col.rim }, dw: wd, dh: wd, bw: wd, bh: wd, vq: dir * rr(6, 10), roll: true, bounces: 3, rest: 0.6, life: 5.5 });
+      spawnBits(9, car.z, wx, 150, 500, [col.body, col.dark, '#202020', col.rim],
+        { dir: dir, spread: 3500, upLo: 1500, upHi: 4500, sizeLo: 50, sizeHi: 95, vz: vz * 0.5 });
+      puff(car.z, wx, 250, SMOKE_GREY, 4);
+      if (t === 'wagon') {
+        spawnBits(14, car.z, wx, 300, 700, STRAW,
+          { dir: dir, spread: 3000, upLo: 2000, upHi: 5000, sizeLo: 70, sizeHi: 120, g: 2200, lifeLo: 1.2, lifeHi: 2.0 });
+      }
+    }
+  }
+
+  // A knocked-out vehicle comes back later, far down the road and out of view
+  function respawnCar(car) {
+    var pz = mod(position + PLAYER_Z, trackLength);
+    car.z = mod(pz + (DRAW_DIST + 25 + Math.random() * 250) * SEG_LEN, trackLength);
+    car.dead = false;
+    car.bumped = 0;
+    car.prevDz = wrapDz(car.z - pz);
+    findSegment(car.z).cars.push(car);
+  }
+
+  // ---- The time-up explosion ---------------------------------------------------
+  // The tractor never moves on screen, so this is done in screen space (low-res
+  // pixels): a fireball, flying pieces (cab, hood, two wheels), the driver and
+  // his straw hat, and fire / smoke particles.
+
+  var PLAYER_COL = { body: '#2f9e44', dark: '#1f6b2e', rim: '#e8d36a' };
+  var SCORCHED = { body: '#2f4a33', dark: '#1a2b1d', rim: '#8a7a3a' };
+
+  function addFx(b, kind, x, y, vx, vy, life, size, grow) {
+    if (b.fx.length >= FX_MAX) return;
+    b.fx.push({ kind: kind, x: x, y: y, vx: vx, vy: vy, life: life, max: life, size: size, grow: grow });
+  }
+
+  // A tractor piece: centre (ccx, ccy) and size (w, h) in design units
+  function boomPiece(b, name, ccx, ccy, w, h, vx, vy, vq, restQ) {
+    var s = PLAYER_S;
+    return {
+      name: name, ccx: ccx, ccy: ccy,
+      x: b.cx + ccx * s, y: b.by + ccy * s, vx: vx, vy: vy, q: 0, vq: vq, restQ: restQ,
+      hv: h * s / 2, hh: w * s / 2, gy: b.by + rr(1, 6),
+      bounces: 2, rest: 0.35, landed: false, roll: false
+    };
+  }
+
+  function startBoom() {
+    var s = PLAYER_S;
+    var b = {
+      t: 0, cx: LW / 2 + playerOffsetPx(), by: PLAYER_BY - Math.round(bounce),
+      parts: [], fx: [], flameT: 0, smokeT: 0, driver: null, hat: null
+    };
+    boom = b;
+    var fy = b.by - 28 * s;                                  // centre of the fireball
+    var dir = rsign();
+
+    b.parts.push(boomPiece(b, 'cab', 0, -45.5, 26, 43, dir * rr(25, 45), -rr(130, 160), dir * rr(3, 5), dir > 0 ? 1 : 3));
+    b.parts.push(boomPiece(b, 'hood', 0, -19.5, 58, 21, -dir * rr(25, 45), -rr(105, 135), -dir * rr(3, 5), 2));
+    for (var w = 0; w < 2; w++) {                            // both big rear wheels
+      var side = w === 0 ? -1 : 1;
+      var wp = boomPiece(b, 'wheel', side * 21.5, -13.5, 27, 27, side * rr(45, 75), -rr(110, 150), side * rr(6, 9), 0);
+      wp.bounces = 3;
+      wp.rest = 0.55;
+      wp.roll = true;
+      b.parts.push(wp);
+    }
+
+    // The driver is launched straight up, cartoon style, and lands sitting
+    b.driver = {
+      x: b.cx, y: b.by - 38 * s, vx: rr(-18, 18), vy: -175, q: 0, vq: rsign() * rr(3, 5), restQ: 0,
+      hv: 10, hh: 6, gy: b.by + 3, bounces: 1, rest: 0.3, landed: false, roll: false
+    };
+    // ... and his straw hat floats down after him
+    b.hat = { x: b.cx, y: b.by - 45 * s, vx: rr(-25, 25), vy: -150, t: 0, landed: false };
+
+    // The first burst: fire, smoke and a few sparks
+    var i, a, sp;
+    for (i = 0; i < 34; i++) {
+      a = rr(0, 6.283);
+      sp = rr(25, 110);
+      addFx(b, 'fire', b.cx + Math.cos(a) * 6, fy + Math.sin(a) * 4, Math.cos(a) * sp, Math.sin(a) * sp * 0.8 - 20, rr(0.35, 0.8), rr(3, 6), 0);
+    }
+    for (i = 0; i < 12; i++) {
+      a = rr(0, 6.283);
+      sp = rr(10, 50);
+      addFx(b, 'smoke', b.cx + Math.cos(a) * 8, fy + Math.sin(a) * 6, Math.cos(a) * sp, Math.sin(a) * sp - 10, rr(1.2, 2), rr(5, 8), 5);
+    }
+    for (i = 0; i < 12; i++) {
+      a = rr(0, 6.283);
+      sp = rr(70, 170);
+      addFx(b, 'ember', b.cx, fy, Math.cos(a) * sp, Math.sin(a) * sp - 60, rr(0.4, 0.8), 1, 0);
+    }
+    if (!reduceMotion) shakeT = 0.5;
+  }
+
+  // Move one flying piece (or the driver): gravity, bounces, then rest
+  function stepBody(p, dt) {
+    if (p.landed && !p.roll) return;
+    if (!p.landed) {
+      p.vy += BOOM_G * dt;
+      p.y += p.vy * dt;
+      p.q += p.vq * dt;
+      var half = (Math.floor(p.q) & 1) ? p.hh : p.hv;
+      if (p.y + half >= p.gy && p.vy > 0) {
+        p.y = p.gy - half;
+        if (p.bounces > 0 && p.vy > 25) {
+          p.vy = -p.vy * p.rest;
+          p.vx *= 0.75;
+          p.vq *= 0.6;
+          p.bounces--;
+        } else {
+          p.landed = true;
+          p.vy = 0;
+          if (!p.roll) {                                     // settle in its resting pose
+            p.vx = 0;
+            p.vq = 0;
+            p.q = p.restQ;
+            p.y = p.gy - ((p.restQ & 1) ? p.hh : p.hv);
+          }
+        }
+      }
+    } else {
+      p.vx *= Math.max(0, 1 - 1.4 * dt);                     // rolling wheel slows down
+      p.q += p.vx * dt / 15;
+    }
+    p.x += p.vx * dt;
+  }
+
+  function updateHat(b, dt) {
+    var h = b.hat;
+    var d = b.driver;
+    if (h.landed) return;
+    h.t += dt;
+    h.vy = Math.min(h.vy + 150 * dt, 38);                    // floats: slow terminal speed
+    h.vx *= Math.max(0, 1 - 1.5 * dt);
+    h.x += h.vx * dt;
+    h.y += h.vy * dt;
+    if (h.vy > 0) h.x += (d.x - h.x) * 1.2 * dt + Math.sin(h.t * 6) * 18 * dt;   // sway toward the driver
+    var landY = d.landed ? d.gy - 16 : b.by + 4;             // onto his head
+    if (h.vy > 0 && h.y >= landY) {
+      h.y = landY;
+      h.landed = true;
+      if (d.landed) h.x = d.x + 1;
+    }
+  }
+
+  function updateBoom(dt) {
+    if (!boom) return;
+    var b = boom;
+    var i;
+    b.t += dt;
+    for (i = 0; i < b.parts.length; i++) stepBody(b.parts[i], dt);
+    stepBody(b.driver, dt);
+    updateHat(b, dt);
+
+    // Lingering: smoke column and small flames on the wreck
+    if (b.t > 0.45) {
+      b.smokeT -= dt;
+      if (b.smokeT <= 0) {
+        b.smokeT = 0.09;
+        var cabP = b.parts[0];
+        var fromCab = Math.random() < 0.4;
+        addFx(b, 'smoke', (fromCab ? cabP.x : b.cx) + rr(-4, 4), (fromCab ? cabP.y : b.by - 14), rr(-4, 4), -rr(16, 26), 1.9, 3, 5);
+      }
+      b.flameT -= dt;
+      if (b.flameT <= 0) {
+        b.flameT = 0.07;
+        var src = Math.random() < 0.4 ? b.parts[Math.floor(Math.random() * 2)] : null;   // cab, hood or the chassis
+        addFx(b, 'fire', (src ? src.x : b.cx) + rr(-6, 6), (src ? src.y - src.hv * 0.5 : b.by - 12), rr(-4, 4), -rr(18, 34), rr(0.25, 0.5), rr(2, 3.5), 0);
+      }
+    }
+
+    for (i = b.fx.length - 1; i >= 0; i--) {
+      var f = b.fx[i];
+      f.life -= dt;
+      if (f.life <= 0) { b.fx.splice(i, 1); continue; }
+      f.x += f.vx * dt;
+      f.y += f.vy * dt;
+      f.vx *= Math.max(0, 1 - 1.2 * dt);
+      if (f.kind === 'ember') f.vy += 250 * dt;
+      else f.vy -= (f.kind === 'fire' ? 30 : 12) * dt;       // hot air rises
+      f.size += f.grow * dt;
+    }
+  }
+
+  // -- Drawing the explosion ---------------------------------------------------
+
+  // Run fn with the origin at (x, y) and the picture turned by whole quarters
+  function drawTurned(x, y, q, fn) {
+    var qi = mod(Math.floor(q), 4);
+    o.save();
+    o.translate(Math.round(x), Math.round(y));
+    o.transform(QC[qi], QS[qi], -QS[qi], QC[qi], 0, 0);
+    fn();
+    o.restore();
+  }
+
+  function drawFireball(b) {
+    var u = b.t / 1.3;
+    if (u >= 1) return;
+    var grow = Math.min(1, b.t / 0.3);
+    var R = 8 + 24 * (1 - (1 - grow) * (1 - grow)) + u * 4;
+    var cx = b.cx;
+    var cy = b.by - 28 * PLAYER_S;
+    o.globalAlpha = u > 0.7 ? 1 - (u - 0.7) / 0.3 : 1;
+    // red outer cloud (several overlapping discs), then orange, then a hot core
+    var outer = u < 0.45 ? '#e8431a' : (u < 0.7 ? '#8c2a16' : '#3b3535');
+    pixelDisc(o, cx, cy, R, outer);
+    pixelDisc(o, cx - R * 0.45, cy - R * 0.3, R * 0.6, outer);
+    pixelDisc(o, cx + R * 0.5, cy - R * 0.2, R * 0.55, outer);
+    pixelDisc(o, cx, cy - R * 0.6, R * 0.5, outer);
+    if (u < 0.6) pixelDisc(o, cx, cy - 2, R * 0.72 * (1 - u / 0.75), '#ff9a1f');
+    if (u < 0.4) pixelDisc(o, cx, cy - 3, R * 0.42 * (1 - u / 0.45), '#fff27a');
+    if (u < 0.1) pixelDisc(o, cx, cy - 3, R * 0.3, '#ffffff');
+    o.globalAlpha = 1;
+  }
+
+  function drawDriverPx(g, x, by, sit) {
+    x = Math.round(x);
+    by = Math.round(by);
+    function R(ax, ay, aw, ah, col) {
+      g.fillStyle = col;
+      g.fillRect(x + ax, by + ay, aw, ah);
+    }
+    if (sit) {                                               // sitting on the road, dazed
+      R(-7, -3, 6, 3, '#1f4a8a');                            // legs
+      R(1, -3, 6, 3, '#1f4a8a');
+      R(-5, -10, 10, 7, '#2a63b8');                          // overalls
+      R(-8, -9, 3, 6, '#d9d2c0');                            // arms
+      R(5, -9, 3, 6, '#d9d2c0');
+      R(-4, -17, 8, 7, '#f2c49b');                           // head
+      R(-4, -18, 8, 2, '#7a4a22');                           // hair
+      R(-3, -15, 2, 2, '#222222');                           // dizzy eyes
+      R(1, -15, 2, 2, '#222222');
+      R(-1, -12, 3, 1, '#a03030');                           // mouth
+    } else {                                                 // flying, arms flailing
+      var flap = Math.floor(time * 10) % 2;
+      R(-4, -5, 3, 5, '#1f4a8a');
+      R(1, -5, 3, 5, '#1f4a8a');
+      R(-5, -13, 10, 8, '#2a63b8');
+      R(-8, flap ? -20 : -12, 3, 7, '#d9d2c0');
+      R(5, flap ? -12 : -20, 3, 7, '#d9d2c0');
+      R(-3, -20, 7, 7, '#f2c49b');
+      R(-3, -21, 7, 2, '#7a4a22');
+    }
+  }
+
+  function drawHatPx(x, y) {
+    x = Math.round(x);
+    y = Math.round(y);
+    o.fillStyle = '#f5d142';
+    o.fillRect(x - 5, y - 1, 11, 2);                         // brim
+    o.fillStyle = '#e8c52e';
+    o.fillRect(x - 3, y - 4, 7, 3);                          // crown
+    o.fillStyle = '#a8431f';
+    o.fillRect(x - 3, y - 2, 7, 1);                          // band
+  }
+
+  function drawWreck() {
+    var b = boom;
+    var s = PLAYER_S;
+    var pal = b.t < 0.2 ? PLAYER_COL : SCORCHED;
+    var i;
+
+    // Scorch mark on the road
+    o.fillStyle = 'rgba(0,0,0,0.22)';
+    o.fillRect(b.cx - 30, b.by - 1, 60, 4);
+    o.fillRect(b.cx - 24, b.by - 3, 48, 2);
+    o.fillRect(b.cx - 24, b.by + 3, 48, 1);
+
+    drawFireball(b);
+
+    // What is left standing: front wheels and a charred frame
+    drawTractor(o, b.cx, b.by, s, SCORCHED, 0, 0, 'base');
+    o.fillStyle = '#2b2624';
+    o.fillRect(Math.round(b.cx - 14 * s), Math.round(b.by - 14 * s), Math.round(28 * s), Math.max(2, Math.round(6 * s)));
+    o.fillStyle = '#4a3a2a';
+    o.fillRect(Math.round(b.cx - 14 * s), Math.round(b.by - 14 * s), Math.round(28 * s), 1);
+
+    // Flying pieces
+    for (i = 0; i < b.parts.length; i++) {
+      var p = b.parts[i];
+      if (p.name === 'wheel') {
+        drawTurned(p.x, p.y, p.q, function () { drawDiscWheel(o, 0, 0, p.hv * 2, pal.rim); });
+      } else {
+        drawTurned(p.x, p.y, p.q, function () {
+          drawTractor(o, -p.ccx * s, -p.ccy * s, s, pal, 0, 0, p.name);
+        });
+      }
+    }
+
+    // The driver (lands sitting, dazed, with stars) and his hat
+    var d = b.driver;
+    drawTurned(d.x, d.y, d.q, function () { drawDriverPx(o, 0, d.hv, d.landed); });
+    if (d.landed) drawStars(d.x, d.gy - 21, 7);
+    drawHatPx(b.hat.x, b.hat.y);
+
+    // Smoke first, then flames and sparks on top
+    var f, sz;
+    for (i = 0; i < b.fx.length; i++) {
+      f = b.fx[i];
+      if (f.kind !== 'smoke') continue;
+      var fr = f.life / f.max;
+      o.globalAlpha = clamp(fr * 0.8, 0, 0.65);
+      o.fillStyle = fr > 0.5 ? '#3a3636' : '#555050';
+      sz = Math.max(1, Math.round(f.size));
+      o.fillRect(Math.round(f.x - sz / 2), Math.round(f.y - sz / 2), sz, sz);
+    }
+    o.globalAlpha = 1;
+    for (i = 0; i < b.fx.length; i++) {
+      f = b.fx[i];
+      if (f.kind === 'smoke') continue;
+      if (f.kind === 'ember') {
+        o.fillStyle = f.life > f.max * 0.4 ? '#fff2a0' : '#ffb03a';
+        o.fillRect(Math.round(f.x), Math.round(f.y), 1, 1);
+        continue;
+      }
+      var k = f.life / f.max;                                // flame colour cools as it ages
+      o.fillStyle = k > 0.7 ? '#fff3a0' : (k > 0.45 ? '#ffc83a' : (k > 0.25 ? '#ff7a1a' : (k > 0.1 ? '#d8301a' : '#4a4040')));
+      sz = Math.max(1, Math.round(f.size * (0.3 + 0.7 * k)));
+      o.fillRect(Math.round(f.x - sz / 2), Math.round(f.y - sz / 2), sz, sz);
+    }
+  }
+
   // ---- Messages and popups ----------------------------------------------
 
   var messageSub = '';
@@ -927,6 +1709,9 @@
   function update(dt) {
     time += dt;
     updateParticles(dt);
+    updateFly(dt);
+    updateBoom(dt);
+    updateScenery(dt);
     messageT = Math.max(0, messageT - dt);
     hitCooldown = Math.max(0, hitCooldown - dt);
     shakeT = Math.max(0, shakeT - dt);
@@ -974,8 +1759,8 @@
   }
 
   function updateOver(dt) {
-    overTime += dt;
-    speed = Math.max(0, speed + BRAKE * 0.5 * dt);
+    overTime += dt;                    // starts below 0: the panel waits for the explosion
+    speed = Math.max(0, speed - MAX_SPEED * 6 * dt);   // the road stops almost at once
     throttle = 0;
     steerVis = approach(steerVis, 0, dt * 4);
     shakeMag = 0;
@@ -1037,7 +1822,7 @@
   function endGame() {
     timeLeft = 0;
     state = 'over';
-    overTime = 0;
+    overTime = -BOOM_PANEL_DELAY;     // restart delay counts from when the panel appears
     var s = score();
     if (s > best) {
       best = s;
@@ -1046,6 +1831,8 @@
     }
     setMessage('', '', 0);
     stopEngine();
+    startBoom();
+    sfxBoom();
     sfxTimeUp();
   }
 
@@ -1064,6 +1851,7 @@
         if (!spec.solid) continue;
         var hw = spec.w / ROAD_W / 2 * spec.hit;
         if (Math.abs(playerX - sp.offset) < PLAYER_HW + hw) {
+          var hitSpeed = speed;
           speed = 0;
           position = mod(position - 500, trackLength);
           // Slide to the side of the obstacle that faces the road
@@ -1072,6 +1860,7 @@
           hitCooldown = 0.6;
           if (!reduceMotion) { shakeT = 0.4; }
           sfxCrash();
+          crashSprite(seg, sp, hitSpeed);
           return;
         }
       }
@@ -1083,10 +1872,12 @@
     var pz = mod(position + PLAYER_Z, trackLength);
     for (var i = 0; i < cars.length; i++) {
       var car = cars[i];
+      if (car.dead) continue;
       var dz = wrapDz(car.z - pz);
       var overlapX = Math.abs(playerX - car.offset) < PLAYER_HW + car.hw;
 
       if (hitCooldown <= 0 && overlapX && dz > -150 && dz < 260 && speed > car.speed) {
+        var hitSpeed = speed;
         speed = Math.min(speed * 0.3, car.speed * 0.6);
         playerX += (playerX >= car.offset ? 1 : -1) * 0.22;
         playerX = clamp(playerX, -2.2, 2.2);
@@ -1094,6 +1885,7 @@
         if (!reduceMotion) shakeT = 0.3;
         sfxBump();
         car.bumped = 1;
+        crashCar(car, hitSpeed);
       } else if (car.prevDz > 0 && dz <= 0 && dz > -SEG_LEN * 4 && !car.bumped) {
         bonusScore += OVERTAKE_POINTS;
         addPopup('+' + OVERTAKE_POINTS);
@@ -1334,7 +2126,7 @@
 
   // A tractor seen from behind. (cx, by) is the bottom centre, s the scale.
   // Design size is about 58 x 67 pixels at s = 1.
-  function drawTractor(g, cx, by, s, c, lean, phase) {
+  function drawTractor(g, cx, by, s, c, lean, phase, part) {
     function R(x, y, w, h, col) {
       var x0 = Math.round(cx + x * s);
       var y0 = Math.round(by + y * s);
@@ -1346,16 +2138,25 @@
       g.fillRect(x0, y0, x1 - x0, y1 - y0);
     }
     var L = Math.round(lean * 3);
+    // part: draw the whole tractor (undefined) or one piece of it, for the
+    // time-up explosion: 'base' (front wheels), 'hood' (rear body + fenders)
+    // or 'cab' (cab and exhaust, no driver). The big wheels are drawn
+    // separately as discs when the tractor falls apart.
+    var all = !part;
 
-    R(-26, -2, 52, 3, 'rgba(0,0,0,0.28)');                  // shadow
-    R(-12 + L * 0.3, -17, 5, 13, TIRE);                      // small front wheels
-    R(7 + L * 0.3, -17, 5, 13, TIRE);
-    R(-14, -26, 28, 16, c.body);                             // rear body
-    R(-14, -12, 28, 3, c.dark);
+    if (all || part === 'base') {
+      R(-26, -2, 52, 3, 'rgba(0,0,0,0.28)');                // shadow
+      R(-12 + L * 0.3, -17, 5, 13, TIRE);                    // small front wheels
+      R(7 + L * 0.3, -17, 5, 13, TIRE);
+    }
+    if (all || part === 'hood') {
+      R(-14, -26, 28, 16, c.body);                           // rear body
+      R(-14, -12, 28, 3, c.dark);
+    }
 
     // Big rear wheels with tread bars that scroll with speed
     var wheels = [-28, 15];
-    for (var w = 0; w < 2; w++) {
+    for (var w = 0; w < 2 && all; w++) {
       var wx = wheels[w];
       R(wx, -27, 13, 27, TIRE);
       for (var k = 0; k < 6; k++) {
@@ -1365,21 +2166,27 @@
       }
       R(w === 0 ? -17 : 15, -20, 2, 13, c.rim);              // rim, inner edge
     }
-    R(-29, -30, 16, 4, c.dark);                              // fenders
-    R(13, -30, 16, 4, c.dark);
-    R(-12, -22, 3, 3, '#ff4a3a');                            // tail lights
-    R(9, -22, 3, 3, '#ff4a3a');
+    if (all || part === 'hood') {
+      R(-29, -30, 16, 4, c.dark);                            // fenders
+      R(13, -30, 16, 4, c.dark);
+      R(-12, -22, 3, 3, '#ff4a3a');                          // tail lights
+      R(9, -22, 3, 3, '#ff4a3a');
+    }
 
     // Cab, leaning a little into the steering direction
-    R(-11 + L, -50, 22, 26, c.body);
-    R(-9 + L, -47, 18, 16, '#bfe6ff');                       // glass
-    R(-9 + L, -47, 18, 2, '#e8f6ff');
-    R(-13 + L, -54, 26, 4, c.dark);                          // roof
-    R(-4 + L, -42, 8, 7, '#f2c49b');                         // driver: face ...
-    R(-5 + L, -45, 10, 3, '#f5d142');                        // ... straw hat
-    R(-7 + L, -35, 14, 5, '#2a63b8');                        // ... overalls
-    R(8 + L, -66, 3, 14, '#3b3b3b');                         // exhaust pipe
-    R(7 + L, -67, 5, 2, '#222222');
+    if (all || part === 'cab') {
+      R(-11 + L, -50, 22, 26, c.body);
+      R(-9 + L, -47, 18, 16, '#bfe6ff');                     // glass
+      R(-9 + L, -47, 18, 2, '#e8f6ff');
+      R(-13 + L, -54, 26, 4, c.dark);                        // roof
+      if (all) {
+        R(-4 + L, -42, 8, 7, '#f2c49b');                     // driver: face ...
+        R(-5 + L, -45, 10, 3, '#f5d142');                    // ... straw hat
+        R(-7 + L, -35, 14, 5, '#2a63b8');                    // ... overalls
+      }
+      R(8 + L, -66, 3, 14, '#3b3b3b');                       // exhaust pipe
+      R(7 + L, -67, 5, 2, '#222222');
+    }
   }
 
   function drawWagonCar(g, x, y, w, h, e) {
@@ -1567,6 +2374,8 @@
       maxY = seg.sy1;
     }
 
+    bucketFx(baseSeg);
+
     // Sprites and traffic, far to near, clipped by the hills in front
     for (n = DRAW_DIST - 1; n >= 0; n--) {
       seg = segments[(baseSeg.i + n) % N];
@@ -1587,8 +2396,12 @@
         var sspec = SPRITES[sp.type];
         var sw = seg.sc1 * sspec.w * LW / 2;
         var sxp = seg.sx1 + seg.sc1 * sp.offset * ROAD_W * LW / 2;
+        if (sp.shake > 0 && !reduceMotion) {      // big scenery wobbles after a hit
+          sxp += Math.round(Math.sin(time * 70) * Math.max(1, sw * 0.04) * (sp.shake / 0.55));
+        }
         drawSpriteAt(sspec.draw, sxp, seg.sy1, sw, sw * sspec.h / sspec.w, seg.clip, sp);
       }
+      for (k = 0; k < seg.fx.length; k++) drawFly(seg, seg.fx[k]);
       if (seg.cp) drawBanner(seg);
     }
 
@@ -1596,6 +2409,7 @@
   }
 
   function drawPlayer() {
+    if (boom) { drawWreck(); return; }       // the tractor has blown up
     var px = LW / 2 + playerOffsetPx();
     var py = PLAYER_BY - Math.round(bounce);
     var lean = steerVis;
@@ -1693,7 +2507,7 @@
       if (blink(1.5)) drawText('PRESS / TAP TO START', LW / 2, 102, 8, '#ffffff');
       drawText('ARROWS OR WASD TO DRIVE', LW / 2, 116, 8, '#25f4ee');
       if (best > 0) drawText('BEST ' + best, LW / 2, 128, 8, '#ffe94d');
-    } else if (state === 'over') {
+    } else if (state === 'over' && overTime >= 0) {      // after the explosion
       panel(16, 30, LW - 32, 114);
       drawText('TIME UP', LW / 2, 38, 16, '#ff5a5a', 'center');
       drawText('DISTANCE ' + formatKm(distance) + ' KM', LW / 2, 62, 8, '#ffffff');
@@ -1712,6 +2526,13 @@
     drawSmoke();
     drawPlayer();
     if (state !== 'title') drawHud();
+    // One soft flash as the tractor blows up: at most 30% opacity, 0.2 s, never repeated
+    if (boom && !reduceMotion && boom.t < 0.2) {
+      o.globalAlpha = 0.3 * (1 - boom.t / 0.2);
+      o.fillStyle = '#fff2c0';
+      o.fillRect(0, 0, LW, LH);
+      o.globalAlpha = 1;
+    }
     drawOverlays();
   }
 
