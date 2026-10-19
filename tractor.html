@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tractor Run – Thom van der Vlugt</title>
+  <meta name="description" content="Tractor Run: an OutRun-style racing game where you drive a tractor through the Dutch countryside.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&amp;display=swap">
+  <link rel="stylesheet" href="styles.css">
+  <script src="tractor.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="logo" href="index.html">Thom van der Vlugt</a>
+      <ul class="nav">
+        <li><a href="index.html">Home</a></li>
+        <li><a href="about.html">About me</a></li>
+        <li><a href="game.html">Flappy Thom</a></li>
+        <li><a href="tractor.html" aria-current="page">Tractor Run</a></li>
+        <li><a href="index.html#contact">Contact</a></li>
+      </ul>
+    </div>
+  </header>
+
+  <main>
+    <div class="container">
+      <h1>Tractor Run</h1>
+      <p class="lead">Arrow keys or WASD to drive, Space to start, M to mute. On a phone, use the buttons below.</p>
+
+      <div class="game game-wide">
+        <canvas id="tractor-canvas" class="game-canvas" width="480" height="360"
+                aria-label="Tractor Run game. Press Space or tap to start. Arrow keys or WASD to drive."></canvas>
+
+        <div class="pad" aria-label="Touch controls">
+          <div class="pad-group">
+            <button id="btn-left" class="pad-btn" type="button" aria-label="Steer left">&#9664;</button>
+            <button id="btn-right" class="pad-btn" type="button" aria-label="Steer right">&#9654;</button>
+          </div>
+          <div class="pad-group">
+            <button id="btn-brake" class="pad-btn" type="button">BRAKE</button>
+            <button id="btn-gas" class="pad-btn gas" type="button">GAS</button>
+          </div>
+        </div>
+
+        <button id="sound-toggle" class="sound-toggle" type="button" aria-pressed="true">Sound: on</button>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      &copy; 2026 Thom van der Vlugt
+    </div>
+  </footer>
+</body>
+</html>
