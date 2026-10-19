@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flappy Thom – Thom van der Vlugt</title>
   <meta name="description" content="Flappy Thom: a little Flappy Bird-style game on the website of Thom van der Vlugt.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&amp;display=swap">
   <link rel="stylesheet" href="styles.css">
   <script src="game.js" defer></script>
 </head>
@@ -24,11 +27,12 @@
   <main>
     <div class="container">
       <h1>Flappy Thom</h1>
-      <p class="lead">Tap, click or press Space to flap. Fly through the pipes!</p>
+      <p class="lead">Tap, click or press Space to flap. Fly through the neon pipes! Press M to mute.</p>
 
       <div class="game">
         <canvas id="game-canvas" class="game-canvas" width="400" height="600"
                 aria-label="Flappy Thom game. Tap, click or press Space to flap."></canvas>
+        <button id="sound-toggle" class="sound-toggle" type="button" aria-pressed="true">Sound: on</button>
       </div>
     </div>
   </main>
