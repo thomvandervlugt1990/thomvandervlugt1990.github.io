@@ -32,8 +32,28 @@
       <div class="game">
         <canvas id="game-canvas" class="game-canvas" width="400" height="600"
                 aria-label="Flappy Thom game. Tap, click or press Space to flap."></canvas>
+
+        <!-- Name entry for a new high score; shown by game.js only when needed -->
+        <form id="score-form" class="score-form" hidden>
+          <label for="score-name">NEW HIGH SCORE! Enter your name</label>
+          <div class="score-form-row">
+            <input id="score-name" class="score-input" type="text" name="nickname"
+                   maxlength="12" autocomplete="nickname" required>
+            <button class="score-save" type="submit">Save</button>
+          </div>
+        </form>
+
         <button id="sound-toggle" class="sound-toggle" type="button" aria-pressed="true">Sound: on</button>
       </div>
+
+      <section class="leaderboard" aria-labelledby="leaderboard-title">
+        <h2 id="leaderboard-title">Leaderboard</h2>
+        <p class="leaderboard-note">Scores are saved on this device only.</p>
+        <p id="score-empty" class="leaderboard-empty">No scores yet. Be the first!</p>
+        <ol id="score-list" class="score-list" role="list" hidden></ol>
+        <p id="score-status" class="sr-only" aria-live="polite"></p>
+        <button id="clear-scores" class="clear-scores" type="button" hidden>Clear scores</button>
+      </section>
     </div>
   </main>
 

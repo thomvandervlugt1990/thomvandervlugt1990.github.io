@@ -94,7 +94,6 @@
   face.onerror = function () { faceLoaded = false; };
   face.src = 'images/thom-face.png';
 
-  best = loadBest();
   reset();
 
   function reset() {
@@ -115,12 +114,14 @@
 
   // ---- Best score and mute storage ------------------------------------
 
+  // Best = the larger of the stored best and the top leaderboard score
   function loadBest() {
+    var stored = 0;
     try {
-      return parseInt(localStorage.getItem('flappyThomBest'), 10) || 0;
-    } catch (e) {
-      return 0;
-    }
+      stored = parseInt(localStorage.getItem('flappyThomBest'), 10) || 0;
+    } catch (e) { /* storage unavailable: ignore */ }
+    var list = loadScores();
+    return Math.max(stored, list.length ? list[0].score : 0);
   }
 
   function saveBest() {
@@ -237,6 +238,8 @@
       spawnPipe(W + 60);
     } else if (state === 'over') {
       if (overTime < RESTART_DELAY) return;
+      // Starting a new game while the name form is open abandons that score
+      hideScoreForm();
       reset();
       return;
     }
@@ -251,7 +254,16 @@
     flap();
   });
 
+  // True when the key press belongs to a form control, not to the game
+  function isTypingTarget(t) {
+    if (!t || !t.tagName) return false;
+    var tag = t.tagName.toUpperCase();
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+      tag === 'BUTTON' || t.isContentEditable === true;
+  }
+
   window.addEventListener('keydown', function (e) {
+    if (isTypingTarget(e.target)) return;   // let players type spaces and the letter M
     if (e.code === 'Space' || e.code === 'ArrowUp') {
       e.preventDefault();       // keep the page from scrolling
       if (!e.repeat) flap();
@@ -259,6 +271,166 @@
       toggleMute();
     }
   });
+
+  // ---- Leaderboard (top 10, stored on this device only) ---------------
+
+  var MAX_SCORES = 10;
+  var NAME_MAX = 12;
+  var scores = loadScores();       // [{ name, score, date }], best first
+  var pendingScore = null;         // score waiting for a name, or null
+  var highlighted = null;          // entry object to highlight after saving
+
+  var scoreForm = document.getElementById('score-form');
+  var scoreInput = document.getElementById('score-name');
+  var scoreList = document.getElementById('score-list');
+  var scoreEmpty = document.getElementById('score-empty');
+  var scoreStatus = document.getElementById('score-status');
+  var clearBtn = document.getElementById('clear-scores');
+
+  // Read and validate the stored list: anything malformed is dropped
+  function loadScores() {
+    var out = [];
+    try {
+      var data = JSON.parse(localStorage.getItem('flappyThomScores'));
+      if (Array.isArray(data)) {
+        data.forEach(function (it) {
+          if (!it || typeof it !== 'object' || typeof it.name !== 'string') return;
+          var s = it.score;
+          if (typeof s !== 'number' || !isFinite(s) || s < 0 || Math.floor(s) !== s) return;
+          var name = it.name.trim().slice(0, NAME_MAX);
+          if (!name) return;
+          out.push({ name: name, score: s, date: typeof it.date === 'string' ? it.date : '' });
+        });
+      }
+    } catch (e) { /* missing, corrupt or unavailable: start empty */ }
+    // Stable sort by score (ties keep stored order), then cap
+    return out
+      .map(function (it, i) { return { it: it, i: i }; })
+      .sort(function (a, b) { return (b.it.score - a.it.score) || (a.i - b.i); })
+      .map(function (x) { return x.it; })
+      .slice(0, MAX_SCORES);
+  }
+
+  function saveScores() {
+    try {
+      localStorage.setItem('flappyThomScores', JSON.stringify(scores));
+    } catch (e) { /* storage unavailable: ignore */ }
+  }
+
+  function loadName() {
+    try {
+      return (localStorage.getItem('flappyThomName') || '').slice(0, NAME_MAX);
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function saveName(name) {
+    try {
+      localStorage.setItem('flappyThomName', name);
+    } catch (e) { /* storage unavailable: ignore */ }
+  }
+
+  // Would this score make the top 10? (a tie with the last place does not)
+  function qualifies(s) {
+    return s > 0 && (scores.length < MAX_SCORES || s > scores[scores.length - 1].score);
+  }
+
+  function say(text) {
+    if (scoreStatus) scoreStatus.textContent = text;
+  }
+
+  // Rebuild the <ol>. Names go in with textContent, never innerHTML.
+  function renderScores() {
+    if (!scoreList) return;
+    while (scoreList.firstChild) scoreList.removeChild(scoreList.firstChild);
+    scores.forEach(function (entry, i) {
+      var li = document.createElement('li');
+      li.className = 'score-row';
+      if (entry === highlighted) li.classList.add('is-new');
+
+      var rank = document.createElement('span');
+      rank.className = 'score-rank';
+      rank.textContent = (i + 1) + '.';
+
+      var name = document.createElement('span');
+      name.className = 'score-name';
+      name.textContent = entry.name;
+
+      var pts = document.createElement('span');
+      pts.className = 'score-points';
+      pts.textContent = String(entry.score);
+      var unit = document.createElement('span');   // read out by screen readers only
+      unit.className = 'sr-only';
+      unit.textContent = ' points';
+      pts.appendChild(unit);
+
+      li.appendChild(rank);
+      li.appendChild(name);
+      li.appendChild(pts);
+      scoreList.appendChild(li);
+    });
+    if (scoreEmpty) scoreEmpty.hidden = scores.length > 0;
+    scoreList.hidden = scores.length === 0;
+    if (clearBtn) clearBtn.hidden = scores.length === 0;
+  }
+
+  // Called at game over: open the name form if the score qualifies
+  function offerScore(s) {
+    if (!scoreForm || !scoreInput || !qualifies(s)) return;
+    pendingScore = s;
+    scoreInput.value = loadName();
+    scoreForm.hidden = false;
+    say('');
+    scoreInput.focus();
+    scoreInput.select();
+  }
+
+  function hideScoreForm() {
+    pendingScore = null;
+    if (!scoreForm) return;
+    scoreForm.hidden = true;     // a hidden focused input loses focus by itself
+    if (scoreInput) scoreInput.blur();
+  }
+
+  if (scoreForm && scoreInput) {
+    scoreForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (pendingScore === null) return;
+      var name = scoreInput.value.trim().slice(0, NAME_MAX);
+      if (!name) {                       // blank name: don't save, keep the form
+        say('Please enter a name.');
+        scoreInput.focus();
+        return;
+      }
+      var entry = { name: name, score: pendingScore, date: new Date().toISOString() };
+      // Insert after every entry with an equal or higher score (earlier wins ties)
+      var at = 0;
+      while (at < scores.length && scores[at].score >= entry.score) at++;
+      scores.splice(at, 0, entry);
+      scores = scores.slice(0, MAX_SCORES);
+      highlighted = entry;
+      saveScores();
+      saveName(name);
+      hideScoreForm();
+      renderScores();
+      say('Saved! ' + name + ' is on the leaderboard with ' + entry.score + ' points.');
+    });
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', function () {
+      if (!window.confirm('Clear all saved scores on this device?')) return;
+      scores = [];
+      highlighted = null;
+      saveScores();
+      renderScores();
+      say('Scores cleared.');
+    });
+  }
+
+  renderScores();
+  best = loadBest();   // after the leaderboard setup: it reads the top score
 
   // ---- Particles ------------------------------------------------------
 
@@ -391,6 +563,7 @@
         newBest = true;
         saveBest();
       }
+      offerScore(score);
       // Crash juice
       if (!reduceMotion) {
         shakeT = SHAKE_TIME;
