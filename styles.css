@@ -235,6 +235,15 @@ p {
   box-shadow: 0 0 10px var(--neon-cyan);
 }
 
+/* Footer */
+
+.site-footer {
+  border-top: 1px solid var(--border);
+  padding: 1.5rem 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 /* Tractor Run touch controls */
 
 .pad {
@@ -278,15 +287,6 @@ p {
 .pad-btn:focus-visible {
   box-shadow: 0 0 12px currentColor;
   background: rgba(255, 255, 255, 0.12);
-}
-
-/* Footer */
-
-.site-footer {
-  border-top: 1px solid var(--border);
-  padding: 1.5rem 0;
-  color: var(--muted);
-  font-size: 0.9rem;
 }
 
 /* Small screens */
