@@ -172,6 +172,29 @@ p {
   overflow-wrap: anywhere;
 }
 
+/* Game */
+
+.game {
+  width: 100%;
+  max-width: 400px;
+  margin: 1.5rem auto 0;
+}
+
+.game-canvas {
+  display: block;
+  width: 100%;
+  max-width: 400px;
+  height: auto;
+  aspect-ratio: 2 / 3;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* Footer */
 
 .site-footer {
