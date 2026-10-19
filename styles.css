@@ -93,7 +93,8 @@ a:focus-visible {
 
 .nav {
   display: flex;
-  gap: 1.25rem;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -203,6 +204,17 @@ p {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Wide (landscape) variant used by Tractor Run */
+
+.game-wide {
+  max-width: 640px;
+}
+
+.game-wide .game-canvas {
+  max-width: 640px;
+  aspect-ratio: 4 / 3;
+}
+
 .sound-toggle {
   display: block;
   margin: 1.25rem auto 0;
@@ -232,9 +244,63 @@ p {
   font-size: 0.9rem;
 }
 
+/* Tractor Run touch controls */
+
+.pad {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.pad-group {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.pad-btn {
+  min-width: 56px;
+  min-height: 64px;
+  padding: 0.5rem 0.9rem;
+  border: 2px solid var(--neon-cyan);
+  border-radius: var(--radius);
+  background: var(--arcade-bg);
+  color: var(--neon-cyan);
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.pad-btn.gas {
+  border-color: var(--neon-magenta);
+  color: var(--neon-magenta);
+  min-width: 84px;
+}
+
+.pad-btn.is-down,
+.pad-btn:focus-visible {
+  box-shadow: 0 0 12px currentColor;
+  background: rgba(255, 255, 255, 0.12);
+}
+
 /* Small screens */
 
 @media (max-width: 480px) {
+  .pad,
+  .pad-group {
+    gap: 0.5rem;
+  }
+
+  .pad-btn {
+    padding: 0.5rem 0.7rem;
+  }
+
   main {
     padding: 2.25rem 0 3rem;
   }
