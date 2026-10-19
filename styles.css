@@ -235,6 +235,170 @@ p {
   box-shadow: 0 0 10px var(--neon-cyan);
 }
 
+/* Leaderboard and name entry */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.score-form {
+  margin: 1.25rem 0 0;
+  padding: 1rem;
+  border: 2px solid var(--neon-magenta);
+  border-radius: var(--radius);
+  background: var(--arcade-bg);
+  color: #ffffff;
+  box-shadow: 0 0 12px var(--neon-magenta);
+}
+
+.score-form[hidden],
+.leaderboard [hidden] {
+  display: none;
+}
+
+.score-form label {
+  display: block;
+  margin-bottom: 0.75rem;
+  color: var(--neon-cyan);
+  font-family: "Press Start 2P", monospace;
+  font-size: 0.7rem;
+  line-height: 1.6;
+}
+
+.score-form-row {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.score-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.5rem 0.75rem;
+  border: 2px solid var(--neon-cyan);
+  border-radius: 8px;
+  background: #000000;
+  color: #ffffff;
+  font: inherit;
+  font-size: 1rem;          /* 16px+ stops iOS from zooming in on focus */
+}
+
+.score-save,
+.clear-scores {
+  min-height: 44px;
+  padding: 0.5rem 1.25rem;
+  border: 2px solid var(--neon-cyan);
+  border-radius: 999px;
+  background: var(--arcade-bg);
+  color: var(--neon-cyan);
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.score-save {
+  flex: 0 0 auto;
+  border-color: var(--neon-magenta);
+  color: var(--neon-magenta);
+}
+
+.score-input:focus-visible,
+.score-save:focus-visible,
+.clear-scores:focus-visible {
+  outline: 3px solid #ffffff;
+  outline-offset: 2px;
+  box-shadow: 0 0 10px var(--neon-cyan);
+}
+
+.score-save:hover,
+.clear-scores:hover {
+  box-shadow: 0 0 10px currentColor;
+}
+
+.leaderboard {
+  max-width: 400px;
+  margin: 2.5rem auto 0;
+  padding: 1rem;
+  border: 2px solid var(--neon-cyan);
+  border-radius: var(--radius);
+  background: var(--arcade-bg);
+  color: #ffffff;
+  box-shadow: 0 0 12px var(--neon-cyan);
+}
+
+.leaderboard h2 {
+  margin: 0 0 0.5rem;
+  color: var(--neon-cyan);
+  font-family: "Press Start 2P", monospace;
+  font-size: 1rem;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.leaderboard-note,
+.leaderboard-empty {
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  text-align: center;
+  color: #cbb8ff;
+}
+
+.score-list {
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.score-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.5rem 0.5rem;
+  border-bottom: 1px dashed rgba(37, 244, 238, 0.3);
+  font-family: "Press Start 2P", monospace;
+  font-size: 0.7rem;
+  line-height: 1.6;
+}
+
+.score-rank {
+  flex: 0 0 2.2rem;
+  color: var(--neon-magenta);
+}
+
+.score-name {
+  flex: 1 1 auto;
+  min-width: 0;             /* lets long names shrink and show an ellipsis */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.score-points {
+  flex: 0 0 auto;
+  color: #ffe94d;
+}
+
+.score-row.is-new {
+  border-radius: 6px;
+  background: rgba(255, 43, 214, 0.18);
+  box-shadow: 0 0 10px var(--neon-magenta), inset 0 0 6px var(--neon-magenta);
+}
+
+.clear-scores {
+  display: block;
+  margin: 0 auto;
+}
+
 /* Footer */
 
 .site-footer {
